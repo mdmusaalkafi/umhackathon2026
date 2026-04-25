@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:4000" : "")
+).replace(/\/$/, "");
 
 const BUSINESS_TYPES = [
   "Cafe",
@@ -141,7 +143,7 @@ function App() {
             Domain 2: Decision Intelligence
           </p>
           <h1 className="font-display text-3xl font-extrabold leading-tight text-slate-900 sm:text-5xl">
-            Z.AI SME Expansion Advisor
+            Gemini SME Expansion Advisor
           </h1>
           <p className="max-w-3xl text-sm leading-relaxed text-slate-700 sm:text-base">
             A hybrid recommendation engine that combines deterministic RM revenue-cost-profit scoring with

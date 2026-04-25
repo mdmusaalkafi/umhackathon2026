@@ -1,10 +1,25 @@
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs/promises");
+const { existsSync } = require("fs");
 const path = require("path");
+const { GoogleGenAI } = require("@google/genai");
+require("dotenv").config({ quiet: true });
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+// Serve frontend static files in production
+const frontendDistPath = path.join(__dirname, "..", "frontend", "dist");
+const isRailwayRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_SERVICE_ID);
+const shouldServeFrontend = (
+  process.env.NODE_ENV === "production" ||
+  process.env.SERVE_FRONTEND === "1" ||
+  isRailwayRuntime
+) && existsSync(frontendDistPath);
+if (shouldServeFrontend) {
+  app.use(express.static(frontendDistPath));
+}
 
 const INPUT_KEYS = [
   "business_type",
@@ -26,9 +41,19 @@ const levelMapping = {
 const MAX_RENT = 20000;
 const MAX_REVENUE_MULTIPLIER = 60000;
 const BASE_FIXED_COST = 5000;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 30000);
+const GEMINI_MAX_RETRIES = Number(process.env.GEMINI_MAX_RETRIES || 4);
+// Gemini SDK reads GEMINI_API_KEY from environment automatically.
+const ai = new GoogleGenAI({});
 
 app.use(cors());
 app.use(express.json());
+
+app.get("/healthz", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 
 function getMappedLevel(value, fallback = 0.5) {
   const key = String(value || "").toLowerCase();
@@ -105,96 +130,213 @@ function extractSpecialRequirements(text) {
   return rules.filter((rule) => includesAny(lower, rule.terms)).map((rule) => rule.key);
 }
 
-async function mockZaiExtractIntent(profile) {
+function createHttpError(message, statusCode = 500) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function getRetryDelayMs(attempt) {
+  const backoffMs = 400 * 2 ** attempt;
+  const jitterMs = Math.floor(Math.random() * 250);
+  return Math.min(backoffMs + jitterMs, 7000);
+}
+
+function parseModelJson(rawContent) {
+  const text = String(rawContent || "").trim();
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const normalized = fenced ? fenced[1].trim() : text;
+
+  if (!normalized) {
+    throw createHttpError("Gemini returned an empty response.", 502);
+  }
+
+  try {
+    return JSON.parse(normalized);
+  } catch {
+    throw createHttpError("Gemini returned invalid JSON. Retry the request.", 502);
+  }
+}
+
+function isQuotaErrorMessage(message) {
+  return /quota exceeded|current quota|billing|limit: 0|free_tier|resource_exhausted/i.test(String(message || ""));
+}
+
+function isRetryableStatus(statusCode) {
+  return [429, 500, 502, 503, 504].includes(Number(statusCode));
+}
+
+async function withTimeout(promise, timeoutMs) {
+  let timer;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(createHttpError(`Gemini API request timed out after ${timeoutMs}ms.`, 504));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callGeminiJson({ systemInstruction, userPrompt, temperature = 0.1, maxOutputTokens = 900 }) {
+  if (!GEMINI_API_KEY) {
+    throw createHttpError("GEMINI_API_KEY is missing. Set it in backend environment variables.", 500);
+  }
+
+  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt += 1) {
+    try {
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: userPrompt,
+          config: {
+            systemInstruction,
+            temperature,
+            maxOutputTokens,
+            responseMimeType: "application/json"
+          }
+        }),
+        GEMINI_TIMEOUT_MS
+      );
+
+      const text = String(response && response.text ? response.text : "").trim();
+
+      if (!text) {
+        if (attempt < GEMINI_MAX_RETRIES) {
+          await sleep(getRetryDelayMs(attempt));
+          continue;
+        }
+
+        throw createHttpError("Gemini returned empty content. Try a shorter prompt or retry.", 502);
+      }
+
+      return {
+        parsed: parseModelJson(text),
+        usage: response && response.usageMetadata ? response.usageMetadata : null
+      };
+    } catch (error) {
+      const statusCode = Number(error && (error.status || error.statusCode));
+      const message = error && typeof error.message === "string"
+        ? error.message
+        : "Gemini API request failed.";
+
+      if (attempt < GEMINI_MAX_RETRIES && (isRetryableStatus(statusCode) || isQuotaErrorMessage(message))) {
+        await sleep(getRetryDelayMs(attempt));
+        continue;
+      }
+
+      if (statusCode === 429 || isQuotaErrorMessage(message)) {
+        throw createHttpError(message, 429);
+      }
+
+      if (statusCode >= 500 && statusCode <= 599) {
+        throw createHttpError(message, 502);
+      }
+
+      if (error && error.statusCode) {
+        throw error;
+      }
+
+      throw createHttpError(message, 500);
+    }
+  }
+
+  throw createHttpError("Gemini API request failed after retries.", 502);
+}
+
+function getKnownBusinessTags(dataset) {
+  return [...new Set(
+    dataset
+      .flatMap((location) => (Array.isArray(location.business_fit_tags) ? location.business_fit_tags : []))
+      .map((tag) => normalizeText(tag).replace(/\s+/g, "_"))
+  )].sort();
+}
+
+function normalizeSlug(value) {
+  return normalizeText(value)
+    .replace(/[^a-z0-9_\s-]/g, "")
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function sanitizeIntent(rawIntent, profile) {
   const profileText = normalizeText(
     `${profile.business_type} ${profile.target_market} ${profile.positioning} ${profile.description}`
   );
 
-  const tagRules = [
-    { tag: "students", terms: ["student", "university", "college", "campus"] },
-    { tag: "office_workers", terms: ["office", "corporate", "professional", "weekday"] },
-    { tag: "tourists", terms: ["tourist", "travel", "hotel", "visitor"] },
-    { tag: "families", terms: ["family", "kids", "children", "parents"] },
-    { tag: "night_owls", terms: ["night", "late", "evening", "weekend"] },
-    { tag: "walk_in", terms: ["walk-in", "walk in", "foot traffic", "busy"] },
-    { tag: "destination", terms: ["destination", "appointment", "pre-order", "preorder"] },
-    { tag: "budget_shoppers", terms: ["budget", "affordable", "value", "cheap"] },
-    { tag: "premium_shoppers", terms: ["premium", "luxury", "high-end", "exclusive"] }
-  ];
+  const inferredTraffic = includesAny(profileText, ["walk-in", "walk in", "foot traffic", "busy", "night"])
+    ? "high"
+    : "medium";
 
-  const extractedTags = tagRules
-    .filter((rule) => includesAny(profileText, rule.terms))
-    .map((rule) => rule.tag);
+  const priorityTags = Array.isArray(rawIntent && rawIntent.priority_tags)
+    ? rawIntent.priority_tags.map((tag) => normalizeSlug(tag)).filter(Boolean)
+    : [];
 
-  const positioningBand = getPositioningBand(profile.positioning);
+  const trafficNeedRaw = normalizeText(rawIntent && rawIntent.traffic_need);
+  const competitionPreferenceRaw = normalizeText(rawIntent && rawIntent.competition_preference);
+  const positioningBandRaw = normalizeText(rawIntent && rawIntent.positioning_band);
 
-  const intent = {
-    priority_tags: extractedTags.length > 0 ? extractedTags : ["walk_in", "commuters"],
-    traffic_need: includesAny(profileText, ["walk-in", "walk in", "foot traffic", "busy"]) ? "high" : "medium",
-    competition_preference: includesAny(profileText, ["less competitive", "low competition", "fewer competitors"])
-      ? "low"
-      : "flexible",
-    positioning_band: positioningBand,
-    special_requirements: extractSpecialRequirements(profileText)
-  };
+  const specialRequirements = Array.isArray(rawIntent && rawIntent.special_requirements)
+    ? rawIntent.special_requirements.map((item) => normalizeSlug(item)).filter(Boolean).slice(0, 8)
+    : extractSpecialRequirements(profile.description);
 
   return {
-    intent
+    priority_tags: priorityTags.length > 0 ? [...new Set(priorityTags)] : ["walk_in", "commuters"],
+    traffic_need: ["low", "medium", "high"].includes(trafficNeedRaw) ? trafficNeedRaw : inferredTraffic,
+    competition_preference: ["low", "flexible", "high"].includes(competitionPreferenceRaw)
+      ? competitionPreferenceRaw
+      : "flexible",
+    positioning_band: ["budget", "mid", "premium"].includes(positioningBandRaw)
+      ? positioningBandRaw
+      : getPositioningBand(profile.positioning),
+    special_requirements: specialRequirements,
+    reasoning: typeof (rawIntent && rawIntent.reasoning) === "string" ? rawIntent.reasoning.trim() : ""
   };
 }
 
-function scoreTagFit(intentTags, locationTags) {
-  const locationTagSet = new Set((locationTags || []).map((tag) => normalizeText(tag)));
-  const matched = intentTags.filter((tag) => locationTagSet.has(normalizeText(tag)));
+function sanitizeFitEvaluations(rawEvaluations, candidates, profile) {
+  const candidateNameMap = new Map(candidates.map((location) => [normalizeText(location.name), location.name]));
+  const parsedByName = new Map();
 
-  if (intentTags.length === 0) {
-    return 0.4;
+  if (Array.isArray(rawEvaluations)) {
+    for (const item of rawEvaluations) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+
+      const normalizedName = normalizeText(item.name);
+
+      if (!candidateNameMap.has(normalizedName)) {
+        continue;
+      }
+
+      parsedByName.set(normalizedName, item);
+    }
   }
 
-  const matchRatio = matched.length / intentTags.length;
-  return clamp(0.2 + matchRatio * 0.8);
-}
-
-function scorePositioningFit(positioningBand, rentScore, competitionScore) {
-  if (positioningBand === "budget") {
-    return clamp(1 - (rentScore * 0.65 + competitionScore * 0.35));
-  }
-
-  if (positioningBand === "premium") {
-    return clamp(0.45 + rentScore * 0.3 + competitionScore * 0.25);
-  }
-
-  return clamp(0.7 - Math.abs(rentScore - 0.5) * 0.35 - Math.abs(competitionScore - 0.5) * 0.25);
-}
-
-function scoreTrafficFit(trafficNeed, accessibilityScore, demandScore) {
-  if (trafficNeed === "high") {
-    return clamp(accessibilityScore * 0.55 + demandScore * 0.45);
-  }
-
-  return clamp(0.55 + demandScore * 0.25 + accessibilityScore * 0.2);
-}
-
-async function mockZaiFitEvaluation({ profile, intent, candidates }) {
-  const evaluations = candidates.map((location) => {
-    const tagFit = scoreTagFit(intent.priority_tags, location.business_fit_tags);
-    const trafficFit = scoreTrafficFit(intent.traffic_need, location.mapped_accessibility, location.mapped_demand);
-    const positioningFit = scorePositioningFit(
-      intent.positioning_band,
-      location.mapped_rent,
-      location.mapped_competition
-    );
-
-    const fitScore = clamp(tagFit * 0.4 + trafficFit * 0.35 + positioningFit * 0.25);
-
-    const reason =
-      `Tag match ${Math.round(tagFit * 100)}%, traffic suitability ${Math.round(trafficFit * 100)}%, ` +
-      `positioning compatibility ${Math.round(positioningFit * 100)}%.`;
+  return candidates.map((location) => {
+    const item = parsedByName.get(normalizeText(location.name));
+    const rawFitScore = Number(item && item.fit_score);
+    const fitScore = Number.isFinite(rawFitScore) ? clamp(rawFitScore) : 0.5;
+    const explanation = typeof (item && item.explanation) === "string" && item.explanation.trim().length > 0
+      ? item.explanation.trim()
+      : "Gemini indicates balanced fit across market demand, competition, and positioning.";
 
     return {
       name: location.name,
       fit_score: Number(fitScore.toFixed(3)),
-      explanation: reason,
+      explanation,
       profile_used: {
         business_type: profile.business_type,
         target_market: profile.target_market,
@@ -202,9 +344,80 @@ async function mockZaiFitEvaluation({ profile, intent, candidates }) {
       }
     };
   });
+}
+
+async function geminiExtractIntent(profile, knownTags) {
+  const response = await callGeminiJson({
+    systemInstruction:
+      "You are Gemini and specialize in Malaysian SME expansion planning. Return valid JSON only. " +
+      "Schema: {\"intent\": {\"priority_tags\":[\"snake_case\"],\"traffic_need\":\"low|medium|high\",\"competition_preference\":\"low|flexible|high\",\"positioning_band\":\"budget|mid|premium\",\"special_requirements\":[\"snake_case\"],\"reasoning\":\"short\"}}.",
+    userPrompt: [
+      `business_type: ${profile.business_type}`,
+      `target_market: ${profile.target_market}`,
+      `positioning: ${profile.positioning}`,
+      `description: ${String(profile.description || "").replace(/\s+/g, " ").trim()}`,
+      `allowed_tags: ${knownTags.join(",")}`
+    ].join("\n"),
+    temperature: 0,
+    maxOutputTokens: 1100
+  });
+
+  const parsed = response.parsed;
+  const intent = sanitizeIntent(parsed.intent || parsed, profile);
 
   return {
-    evaluations
+    intent,
+    usage: response.usage || null
+  };
+}
+
+async function geminiFitEvaluation({ profile, intent, candidates }) {
+  const locationLines = candidates.map((location) => {
+    const tags = Array.isArray(location.business_fit_tags) ? location.business_fit_tags.join("|") : "";
+
+    return [
+      location.name,
+      `state:${location.state}`,
+      `profit:${location.estimated_profit}`,
+      `demand:${location.demand_level}`,
+      `access:${location.accessibility}`,
+      `rent:${location.rent_level}`,
+      `competition:${location.competition_level}`,
+      `tags:${tags}`,
+      `notes:${String(location.notes || "").replace(/\s+/g, " ").trim()}`
+    ].join("; ");
+  });
+
+  const response = await callGeminiJson({
+    systemInstruction:
+      "You are Gemini scoring SME expansion locations. Return valid JSON only. " +
+      "Schema: {\"evaluations\":[{\"name\":\"exact candidate name\",\"fit_score\":0.0,\"explanation\":\"short\"}],\"overall_explanation\":\"2 concise sentences\"}. " +
+      "Rules: include each location exactly once, fit_score between 0 and 1.",
+    userPrompt: [
+      `profile_business_type: ${profile.business_type}`,
+      `profile_target_market: ${profile.target_market}`,
+      `profile_positioning: ${profile.positioning}`,
+      `intent_priority_tags: ${(intent.priority_tags || []).join(",")}`,
+      `intent_traffic_need: ${intent.traffic_need}`,
+      `intent_competition_preference: ${intent.competition_preference}`,
+      `intent_positioning_band: ${intent.positioning_band}`,
+      "locations:",
+      ...locationLines
+    ].join("\n"),
+    temperature: 0.15,
+    maxOutputTokens: 1800
+  });
+
+  const parsed = response.parsed;
+  const evaluations = sanitizeFitEvaluations(parsed.evaluations, candidates, profile);
+  const overallExplanation = typeof parsed.overall_explanation === "string"
+    ? parsed.overall_explanation.trim()
+    : "";
+
+  return {
+    evaluations,
+    overall_explanation: overallExplanation,
+    usage: response.usage || null
   };
 }
 
@@ -216,7 +429,7 @@ function normalizeByRange(value, min, max) {
   return clamp((value - min) / (max - min));
 }
 
-async function mockZaiFinalizeRanking({ profile, intent, candidates, fitEvaluations }) {
+function finalizeRanking({ profile, intent, candidates, fitEvaluations, aiOverallExplanation }) {
   const fitMap = new Map(fitEvaluations.map((item) => [item.name, item]));
 
   const profits = candidates.map((item) => item.estimated_profit);
@@ -253,11 +466,15 @@ async function mockZaiFinalizeRanking({ profile, intent, candidates, fitEvaluati
 
   const top = ranked[0];
 
-  const explanation =
+  const fallbackExplanation =
     `${top.name} ranks highest for ${profile.business_type} because it balances ` +
     `profit (RM ${top.estimated_profit.toLocaleString("en-MY")}) with strong contextual fit ` +
     `(fit score ${top.fit_score}). Priority intent tags (${intent.priority_tags.join(", "
     )}) align with local demand and traffic conditions, while key risks include ${top.competition_level} competition and ${top.rent_level} rent.`;
+
+  const explanation = typeof aiOverallExplanation === "string" && aiOverallExplanation.trim().length > 0
+    ? aiOverallExplanation.trim()
+    : fallbackExplanation;
 
   return {
     top_recommendation: {
@@ -311,9 +528,16 @@ app.post("/analyze", async (req, res) => {
       return res.status(400).json({ error: validationError });
     }
 
+    if (!GEMINI_API_KEY) {
+      return res.status(500).json({
+        error: "GEMINI_API_KEY is missing. Add it to backend environment variables before calling /analyze."
+      });
+    }
+
     const profile = req.body;
     const budgetRange = parseBudgetRange(profile.budget);
     const dataset = await loadDataset();
+    const knownTags = getKnownBusinessTags(dataset);
 
     const scoredLocations = dataset.map((location) => {
       const mappedDemand = getMappedLevel(location.demand_level);
@@ -347,18 +571,19 @@ app.post("/analyze", async (req, res) => {
       .sort((a, b) => b.estimated_profit - a.estimated_profit)
       .slice(0, 8);
 
-    const intentResult = await mockZaiExtractIntent(profile);
-    const fitResult = await mockZaiFitEvaluation({
+    const intentResult = await geminiExtractIntent(profile, knownTags);
+    const fitResult = await geminiFitEvaluation({
       profile,
       intent: intentResult.intent,
       candidates: candidatePool
     });
 
-    const finalResult = await mockZaiFinalizeRanking({
+    const finalResult = finalizeRanking({
       profile,
       intent: intentResult.intent,
       candidates: candidatePool,
-      fitEvaluations: fitResult.evaluations
+      fitEvaluations: fitResult.evaluations,
+      aiOverallExplanation: fitResult.overall_explanation
     });
 
     return res.json({
@@ -367,6 +592,15 @@ app.post("/analyze", async (req, res) => {
       ai_explanation: finalResult.ai_explanation,
       data_table: finalResult.full_ranked_table,
       business_intent: intentResult.intent,
+      ai_meta: {
+        provider: "Google Gemini",
+        model: GEMINI_MODEL,
+        sdk: "@google/genai"
+      },
+      token_usage: {
+        intent: intentResult.usage,
+        fit: fitResult.usage
+      },
       budget_filter: {
         min: budgetRange.min,
         max: Number.isFinite(budgetRange.max) ? budgetRange.max : null,
@@ -374,13 +608,21 @@ app.post("/analyze", async (req, res) => {
       }
     });
   } catch (error) {
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Failed to analyze locations.",
-      details: error.message
+      details: isQuotaErrorMessage(error.message)
+        ? "Gemini quota is exhausted or disabled for this API key/project. Enable billing or use a key with quota, then retry."
+        : error.message
     });
   }
 });
 
+if (shouldServeFrontend) {
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(frontendDistPath, "index.html"));
+  });
+}
+
 app.listen(PORT, () => {
-  console.log(`Z.AI SME Expansion Advisor backend running on port ${PORT}`);
+  console.log(`Gemini SME Expansion Advisor backend running on port ${PORT}`);
 });

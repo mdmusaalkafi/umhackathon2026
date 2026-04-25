@@ -1,4 +1,4 @@
-# Z.AI SME Expansion Advisor
+# Gemini SME Expansion Advisor
 
 AI-powered decision intelligence web app for SME expansion planning in Malaysia.
 
@@ -14,7 +14,7 @@ This project is built for Domain 2: AI for Economic Empowerment & Decision Intel
 The system uses a hybrid approach:
 
 1. Deterministic scoring engine (financial math)
-2. Mock Z.AI multi-stage reasoning (intent extraction, fit scoring, final explanation)
+2. Real Google Gemini reasoning (intent extraction, fit scoring, explanation)
 
 ## Tech Stack
 
@@ -102,9 +102,35 @@ Runs the full pipeline:
 2. Load dataset
 3. Compute revenue/cost/profit per location
 4. Filter by budget feasibility
-5. Mock Z.AI Call 1: extract business intent from unstructured description
-6. Mock Z.AI Call 2: evaluate fit score for candidates
-7. Mock Z.AI Call 3: produce final ranking and explanation
+5. Gemini Call 1: extract business intent from unstructured description
+6. Gemini Call 2: evaluate contextual fit score for candidate locations
+7. Combine fit scores with RM profit metrics to produce explainable ranking
+
+## Environment Variables (Backend)
+
+Create a backend environment file before starting the server:
+
+```bash
+# backend/.env
+GEMINI_API_KEY=your_google_gemini_api_key
+GEMINI_MODEL=gemini-3-flash-preview
+PORT=4000
+```
+
+Optional tuning:
+
+```bash
+GEMINI_TIMEOUT_MS=30000
+GEMINI_MAX_RETRIES=4
+SERVE_FRONTEND=1
+```
+
+`SERVE_FRONTEND` is optional. In cloud production (`NODE_ENV=production`), the backend serves `frontend/dist` automatically.
+
+Security:
+
+- Never commit API keys to version control.
+- Use backend environment variables (or backend/.env in local development).
 
 ### Example Response Shape
 
@@ -129,34 +155,133 @@ Runs the full pipeline:
 }
 ```
 
-## Run Locally
+## Run Locally (Dev Mode)
 
-### 1) Start Backend
+### 1) Install Dependencies
 
 ```bash
 cd backend
 npm install
+cd ../frontend
+npm install
+```
+
+### 2) Configure Backend Environment
+
+Create `backend/.env` from `backend/.env.example` and set at least:
+
+```bash
+GEMINI_API_KEY=your_google_gemini_api_key
+GEMINI_MODEL=gemini-3-flash-preview
+PORT=4000
+```
+
+### 3) Run Backend + Frontend
+
+Terminal 1:
+
+```bash
+cd backend
 npm start
 ```
 
-Backend runs on `http://localhost:4000`.
-
-### 2) Start Frontend
+Terminal 2:
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
-Frontend runs on Vite default port (usually `http://localhost:5173`).
+Frontend: `http://localhost:5173` (default Vite)
+Backend: `http://localhost:4000`
 
-If needed, configure API base URL:
+The frontend defaults to `http://localhost:4000` in development.
+
+## Run Locally (Single Production Server)
+
+This mirrors hackathon/cloud deployment behavior.
 
 ```bash
-# frontend/.env
-VITE_API_BASE_URL=http://localhost:4000
+cd frontend
+npm run build
+
+cd ../backend
+npm start
 ```
+
+Then open `http://localhost:4000`.
+
+Notes:
+
+- In production mode (`NODE_ENV=production`), backend serves `frontend/dist` automatically.
+- For local preview without setting `NODE_ENV=production`, set `SERVE_FRONTEND=1` in `backend/.env`.
+
+## Cloud Deployment (Single Service)
+
+Deploy as one Node.js web service from repository root.
+
+### Required Environment Variables
+
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL` (recommended: `gemini-3-flash-preview`)
+- `PORT` (usually injected by platform)
+
+### Build Command
+
+```bash
+npm install --prefix backend
+npm install --prefix frontend
+npm run build --prefix frontend
+```
+
+### Start Command
+
+```bash
+npm start --prefix backend
+```
+
+This works on Render, Railway, and similar platforms.
+
+## Railway Deployment (Recommended)
+
+This repo includes `railway.toml` so Railway uses the correct build/start commands automatically.
+
+### 1) Create Railway Project
+
+- Push this repo to GitHub.
+- In Railway, create a new project from this GitHub repository.
+- Select the root folder (do not set service root to backend/ or frontend/).
+
+### 2) Set Environment Variables in Railway
+
+- `GEMINI_API_KEY` (required)
+- `GEMINI_MODEL=gemini-3-flash-preview`
+
+Do not set `PORT` manually in Railway; Railway injects it automatically.
+
+### 3) Deploy
+
+- Trigger deploy from Railway UI.
+- Railway will run build and start from `railway.toml`:
+
+```toml
+[build]
+buildCommand = "npm install --prefix backend && npm install --prefix frontend && npm run build --prefix frontend"
+
+[deploy]
+startCommand = "npm start --prefix backend"
+healthcheckPath = "/healthz"
+```
+
+### 4) Verify Live App
+
+- Open your generated Railway domain.
+- Verify health endpoint: `/healthz` returns `{ "status": "ok" }`.
+- Submit a sample analysis request from the UI.
+
+### Important Gemini Quota Note
+
+If `/analyze` returns status `429` with quota/billing details, your Gemini project key has no available quota. Enable billing or use a key/project with quota.
 
 ## Frontend Output Panels
 
@@ -169,5 +294,6 @@ VITE_API_BASE_URL=http://localhost:4000
 ## Validation Notes
 
 - Frontend build passes (`npm run build`)
-- Backend smoke-tested with `POST /analyze`
+- Backend serves built frontend in single-server mode
+- Backend smoke-tested with `POST /analyze` (returns expected error if API key/quota is unavailable)
 - Response includes ranking, explanation, and quantifiable RM metrics
