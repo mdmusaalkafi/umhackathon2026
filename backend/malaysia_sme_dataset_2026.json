@@ -1,0 +1,178 @@
+[
+  {
+    "name": "KLCC",
+    "state": "Kuala Lumpur",
+    "type": "urban_core",
+    "rent_level": "very_high",
+    "competition_level": "saturated",
+    "demand_level": "very_high",
+    "accessibility": "very_high",
+    "business_fit_tags": ["tourists", "office_workers", "expats", "premium_shoppers"],
+    "notes": "Premium CBD and tourist hub"
+  },
+  {
+    "name": "Subang Jaya SS15",
+    "state": "Selangor",
+    "type": "education_hub",
+    "rent_level": "medium",
+    "competition_level": "high",
+    "demand_level": "high",
+    "accessibility": "high",
+    "business_fit_tags": ["students", "night_owls", "walk_in", "cafes"],
+    "notes": "University crowd and late-night traffic"
+  },
+  {
+    "name": "Bangsar South",
+    "state": "Kuala Lumpur",
+    "type": "mixed_use",
+    "rent_level": "high",
+    "competition_level": "high",
+    "demand_level": "very_high",
+    "accessibility": "high",
+    "business_fit_tags": ["office_workers", "expats", "professionals", "delivery"],
+    "notes": "Corporate daytime demand with strong delivery volume"
+  },
+  {
+    "name": "Cheras Leisure Mile",
+    "state": "Kuala Lumpur",
+    "type": "residential_commercial",
+    "rent_level": "medium",
+    "competition_level": "medium",
+    "demand_level": "high",
+    "accessibility": "medium",
+    "business_fit_tags": ["families", "commuters", "budget_shoppers"],
+    "notes": "Dense residential area with price-sensitive demand"
+  },
+  {
+    "name": "Mont Kiara",
+    "state": "Kuala Lumpur",
+    "type": "expat_cluster",
+    "rent_level": "very_high",
+    "competition_level": "high",
+    "demand_level": "high",
+    "accessibility": "medium",
+    "business_fit_tags": ["expats", "premium_shoppers", "families", "international"],
+    "notes": "Affluent expat neighborhood with premium spending"
+  },
+  {
+    "name": "Cyberjaya",
+    "state": "Selangor",
+    "type": "tech_hub",
+    "rent_level": "medium",
+    "competition_level": "medium",
+    "demand_level": "medium",
+    "accessibility": "high",
+    "business_fit_tags": ["students", "tech_workers", "delivery", "destination"],
+    "notes": "Tech offices and tertiary institutions"
+  },
+  {
+    "name": "George Town Heritage Core",
+    "state": "Penang",
+    "type": "tourism_core",
+    "rent_level": "high",
+    "competition_level": "saturated",
+    "demand_level": "very_high",
+    "accessibility": "high",
+    "business_fit_tags": ["tourists", "foodies", "night_owls", "walk_in"],
+    "notes": "High tourist flow, strong food and lifestyle economy"
+  },
+  {
+    "name": "Iskandar Puteri",
+    "state": "Johor",
+    "type": "growth_corridor",
+    "rent_level": "medium",
+    "competition_level": "low",
+    "demand_level": "medium",
+    "accessibility": "medium",
+    "business_fit_tags": ["families", "commuters", "new_town", "destination"],
+    "notes": "Growing township with moderate competition"
+  },
+  {
+    "name": "Johor Bahru City Square District",
+    "state": "Johor",
+    "type": "cross_border_retail",
+    "rent_level": "high",
+    "competition_level": "high",
+    "demand_level": "very_high",
+    "accessibility": "very_high",
+    "business_fit_tags": ["tourists", "commuters", "walk_in", "retail"],
+    "notes": "Cross-border demand and major transit flow"
+  },
+  {
+    "name": "Kota Kinabalu Waterfront",
+    "state": "Sabah",
+    "type": "tourism_lifestyle",
+    "rent_level": "high",
+    "competition_level": "medium",
+    "demand_level": "high",
+    "accessibility": "high",
+    "business_fit_tags": ["tourists", "night_owls", "foodies", "premium_shoppers"],
+    "notes": "Evening and weekend lifestyle concentration"
+  },
+  {
+    "name": "Kuching City Center",
+    "state": "Sarawak",
+    "type": "urban_core",
+    "rent_level": "medium",
+    "competition_level": "medium",
+    "demand_level": "medium",
+    "accessibility": "medium",
+    "business_fit_tags": ["families", "commuters", "government_workers"],
+    "notes": "Stable mixed-demand urban center"
+  },
+  {
+    "name": "Shah Alam Seksyen 13",
+    "state": "Selangor",
+    "type": "industrial_commercial",
+    "rent_level": "medium",
+    "competition_level": "medium",
+    "demand_level": "high",
+    "accessibility": "high",
+    "business_fit_tags": ["office_workers", "students", "sports_crowds", "delivery"],
+    "notes": "Industrial workers, universities, and event traffic"
+  },
+  {
+    "name": "Setia Alam",
+    "state": "Selangor",
+    "type": "suburban_retail",
+    "rent_level": "high",
+    "competition_level": "high",
+    "demand_level": "high",
+    "accessibility": "high",
+    "business_fit_tags": ["families", "premium_shoppers", "destination"],
+    "notes": "Affluent suburban households and mall traffic"
+  },
+  {
+    "name": "Seremban 2",
+    "state": "Negeri Sembilan",
+    "type": "planned_township",
+    "rent_level": "low",
+    "competition_level": "low",
+    "demand_level": "medium",
+    "accessibility": "medium",
+    "business_fit_tags": ["families", "budget_shoppers", "new_town"],
+    "notes": "Lower rental burden with expanding local demand"
+  },
+  {
+    "name": "Melaka Raya",
+    "state": "Melaka",
+    "type": "tourism_commercial",
+    "rent_level": "medium",
+    "competition_level": "high",
+    "demand_level": "high",
+    "accessibility": "medium",
+    "business_fit_tags": ["tourists", "foodies", "night_owls", "walk_in"],
+    "notes": "Tourism-led demand with active evening economy"
+  },
+  {
+    "name": "Ipoh New Town",
+    "state": "Perak",
+    "type": "regional_city",
+    "rent_level": "low",
+    "competition_level": "medium",
+    "demand_level": "medium",
+    "accessibility": "medium",
+    "business_fit_tags": ["families", "students", "budget_shoppers"],
+    "notes": "Balanced cost profile with broad local demand"
+  }
+]
